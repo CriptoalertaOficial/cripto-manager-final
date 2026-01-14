@@ -1,0 +1,179 @@
+import streamlit as st
+import pandas as pd
+import requests
+import warnings
+
+# --- 0. CONFIGURAÇÃO INICIAL (Obrigatório ser a primeira linha) ---
+st.set_page_config(page_title="CriptoManager Pro", page_icon="🚀", layout="wide")
+
+# --- 1. SILENCIADOR DE AVISOS TÉCNICOS ---
+warnings.filterwarnings("ignore")
+
+# --- 2. SISTEMA DE LOGIN (SEGURANÇA) ---
+def check_password():
+    """Verifica a senha antes de carregar o sistema."""
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
+    if st.session_state["password_correct"]:
+        return True
+
+    # Tela de Login Limpa
+    col1, col2, col3 = st.columns([1,2,1])
+    with col2:
+        st.markdown("## 🔒 Acesso Restrito CriptoAlerta")
+        st.info("Digite a senha exclusiva do Dossiê 2026.")
+        password = st.text_input("Senha de Acesso:", type="password")
+        
+        if st.button("Entrar no Sistema"):
+            # --- SUA SENHA É DEFINIDA AQUI ---
+            if password == "baleia2026": 
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("🚫 Senha incorreta.")
+    return False
+
+# Se a senha não for digitada, o código PARA aqui
+if not check_password():
+    st.stop()
+
+# =========================================================
+# --- SISTEMA DO APP (Só carrega se a senha estiver certa) ---
+# =========================================================
+
+# --- 3. FUNÇÃO PARA PEGAR PREÇOS (API CoinGecko) ---
+@st.cache_data(ttl=60) # Atualiza a cada 60s
+def get_crypto_price(coin_id):
+    try:
+        # Tenta conectar na API
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+        response = requests.get(url, timeout=3)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if coin_id in data:
+                return data[coin_id]['usd']
+        return 0 # Se não achar, retorna 0
+    except:
+        return 0 # Se der erro de internet, retorna 0
+
+# --- 4. VISUAL (CSS DARK MODE) ---
+st.markdown("""
+<style>
+    .stMetric {
+        background-color: #1a1c24;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 15px;
+    }
+    .stButton button {
+        background-color: #00C853; 
+        color: white;
+        border-radius: 5px;
+        font-weight: bold;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- 5. CABEÇALHO ---
+st.title("📊 CriptoManager Pro")
+st.markdown("**Monitoramento Institucional | CriptoAlerta 2.0**")
+st.divider()
+
+# --- 6. BARRA LATERAL (CADASTRO) ---
+st.sidebar.header("➕ Adicionar Ativo")
+
+# Cria o banco de dados na memória se não existir
+if 'portfolio' not in st.session_state:
+    st.session_state['portfolio'] = pd.DataFrame(columns=['Ativo', 'ID', 'Qtd', 'Preço_Medio', 'Meta', 'Stop'])
+
+with st.sidebar.form("form_cadastro"):
+    st.write("Dados da Compra:")
+    ativo = st.text_input("Nome da Moeda (Ex: Bitcoin)", "Bitcoin")
+    id_coin = st.text_input("ID CoinGecko (Ex: bitcoin)", "bitcoin")
+    st.caption("Dica: Copie o ID da URL do CoinGecko (ex: render-token)")
+    
+    c1, c2 = st.columns(2)
+    qtd = c1.number_input("Quantidade", min_value=0.0, format="%.6f")
+    pm = c2.number_input("Preço Médio Pago ($)", min_value=0.0)
+    
+    c3, c4 = st.columns(2)
+    meta = c3.number_input("Alvo de Venda ($)", min_value=0.0)
+    stop = c4.number_input("Stop Loss ($)", min_value=0.0)
+    
+    btn_salvar = st.form_submit_button("💾 Salvar na Carteira")
+    
+    if btn_salvar:
+        if qtd > 0:
+            novo_ativo = pd.DataFrame([{
+                'Ativo': ativo, 
+                'ID': id_coin.lower().strip(), 
+                'Qtd': qtd, 
+                'Preço_Medio': pm, 
+                'Meta': meta, 
+                'Stop': stop
+            }])
+            st.session_state['portfolio'] = pd.concat([st.session_state['portfolio'], novo_ativo], ignore_index=True)
+            st.success(f"{ativo} adicionado!")
+        else:
+            st.warning("Quantidade inválida.")
+
+# --- 7. PAINEL PRINCIPAL ---
+if not st.session_state['portfolio'].empty:
+    
+    df = st.session_state['portfolio'].copy()
+    
+    # Busca Preços
+    with st.spinner('Atualizando cotações...'):
+        precos = [get_crypto_price(id) for id in df['ID']]
+    
+    df['Preço_Atual'] = precos
+    
+    # Faz as Contas
+    df['Total Investido'] = df['Qtd'] * df['Preço_Medio']
+    df['Valor Hoje'] = df['Qtd'] * df['Preço_Atual']
+    df['Lucro %'] = ((df['Preço_Atual'] - df['Preço_Medio']) / df['Preço_Medio']) * 100
+    
+    # Define o Alerta (Coração do App)
+    def definir_alerta(row):
+        if row['Preço_Atual'] == 0: return "⚠️ ERRO ID"
+        if row['Preço_Atual'] >= row['Meta']: return "💰 VENDER AGORA"
+        if row['Preço_Atual'] <= row['Stop']: return "🛑 STOP LOSS"
+        return "⏳ HOLD"
+        
+    df['ALERTA'] = df.apply(definir_alerta, axis=1)
+    
+    # Mostra os Cards de Topo
+    investido = df['Total Investido'].sum()
+    atual = df['Valor Hoje'].sum()
+    lucro = atual - investido
+    
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Total Investido", f"$ {investido:,.2f}")
+    k2.metric("Patrimônio Atual", f"$ {atual:,.2f}", delta=f"{lucro:,.2f}")
+    k3.metric("Resultado Global", "LUCRO" if lucro >= 0 else "PREJUÍZO")
+
+    # Mostra a Tabela Colorida
+    st.subheader("Minhas Posições")
+    
+    def pintar_tabela(val):
+        if val == '💰 VENDER AGORA': return 'background-color: #2e7d32; color: white' # Verde Escuro
+        if val == '🛑 STOP LOSS': return 'background-color: #c62828; color: white' # Vermelho Escuro
+        if val == '⏳ HOLD': return 'background-color: #ff8f00; color: black' # Laranja
+        return ''
+
+    st.dataframe(
+        df[['Ativo', 'Qtd', 'Preço_Medio', 'Preço_Atual', 'Lucro %', 'ALERTA']]
+        .style.applymap(pintar_tabela, subset=['ALERTA'])
+        .format({'Preço_Medio': '${:.2f}', 'Preço_Atual': '${:.2f}', 'Lucro %': '{:.2f}%'}),
+        use_container_width=True
+    )
+    
+    st.divider()
+    if st.button("🗑️ Resetar Carteira"):
+        st.session_state['portfolio'] = pd.DataFrame(columns=['Ativo', 'ID', 'Qtd', 'Preço_Medio', 'Meta', 'Stop'])
+        st.rerun()
+
+else:
+    st.info("👈 Use o menu lateral para cadastrar sua primeira criptomoeda.")
